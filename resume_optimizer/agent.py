@@ -1,9 +1,10 @@
+import os
 from typing import List, Dict, TypedDict, Optional
 
 # Pydantic models for structured output
-from pydantic.v1 import BaseModel, Field
+from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
+from langchain_deepseek import ChatDeepSeek
 from langchain_core.output_parsers import StrOutputParser
 
 
@@ -57,7 +58,7 @@ def evaluate_resume(state: GraphState) -> Dict:
     """
     Evaluates the optimized resume against the original resume and job description.
     """
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatDeepSeek(model="deepseek-chat", api_key=os.environ.get("DEEPSEEK_API_KEY"), temperature=0)
     structured_llm = llm.with_structured_output(Evaluation)
 
     system_prompt = """You are an expert hiring manager and career coach. Your task is to evaluate a rewritten resume.
@@ -102,7 +103,72 @@ def output_formatter(state: GraphState) -> Dict:
     return state
 
 
+def rag_keyword_enhancer(state: GraphState) -> Dict:
+    """
+    Enhances keywords by making an API call to a LightRAG server.
+    (This is a mock implementation as we don't have credentials)
+    """
+    import httpx
+
+    lightrag_url = os.environ.get("LIGHTRAG_API_URL", "http://localhost:9621/api/query")
+    print(f"--- Calling LightRAG API at {lightrag_url} ---")
+
+    try:
+        payload = {"query": state["rag_query"], "mode": "hybrid"}
+        response = httpx.post(lightrag_url, json=payload, timeout=60)
+        response.raise_for_status()
+
+        response_json = response.json()
+        enhanced_keywords = response_json.get("keywords", [])
+
+        if enhanced_keywords:
+            print("--- RAG call successful, updating keywords ---")
+            state['keywords'] = enhanced_keywords
+        else:
+            print("--- RAG call did not return new keywords, keeping original ---")
+
+    except httpx.RequestError as e:
+        print(f"--- LightRAG API call failed: {e}. Keeping original keywords. ---")
+
+    return state
+
+
 # --- Conditional Edge Functions ---
+
+class RagDecision(BaseModel):
+    """The decision on whether to use RAG or not."""
+    decision: str = Field(description="The decision, which must be 'rag' or 'no_rag'.")
+
+def should_use_rag(state: GraphState) -> str:
+    """
+    Determines whether to use the RAG pipeline or go directly to rewriting.
+    """
+    print("--- Deciding whether to use RAG ---")
+    llm = ChatDeepSeek(model="deepseek-chat", api_key=os.environ.get("DEEPSEEK_API_KEY"), temperature=0)
+    structured_llm = llm.with_structured_output(RagDecision)
+
+    system_prompt = """You are an expert in analyzing job descriptions. Your task is to determine if a job description \
+is highly specialized or contains niche terminology that would benefit from being cross-referenced with a larger knowledge base of similar roles.
+
+If the job description is for a standard role (e.g., 'Software Engineer', 'Data Analyst') with common skills, respond with 'no_rag'.
+If the job description mentions highly specific domains, proprietary technologies, or requires deep, esoteric knowledge (e.g., 'Quantum Cryptography Specialist', 'Myelin Sheath Bio-regenerator'), respond with 'rag'.
+"""
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("human", "Job Description:\n{job_description}\n\nDecision:"),
+    ])
+
+    chain = prompt | structured_llm
+
+    result = chain.invoke({"job_description": state["job_description"]})
+
+    if result.decision == "rag":
+        print("--- Decision: RAG required for keyword enhancement. ---")
+        return "transform_query"
+    else:
+        print("--- Decision: RAG not required. Proceeding to rewrite. ---")
+        return "rewrite_resume"
 
 def decide_to_rewrite(state: GraphState) -> str:
     """
@@ -146,6 +212,7 @@ def present_to_user(state: GraphState) -> Dict:
 
 # --- Graph Assembly ---
 from langgraph.graph import StateGraph, END, START
+from langgraph.checkpoint.memory import MemorySaver
 
 def create_graph() -> StateGraph:
     """
@@ -156,6 +223,8 @@ def create_graph() -> StateGraph:
     # Add nodes
     workflow.add_node("process_inputs", process_inputs)
     workflow.add_node("extract_keywords", extract_keywords)
+    workflow.add_node("transform_query", transform_query)
+    workflow.add_node("rag_keyword_enhancer", rag_keyword_enhancer)
     workflow.add_node("rewrite_resume", rewrite_resume)
     workflow.add_node("evaluate_resume", evaluate_resume)
     workflow.add_node("present_to_user", present_to_user)
@@ -164,8 +233,19 @@ def create_graph() -> StateGraph:
     # Define edges
     workflow.set_entry_point("process_inputs")
     workflow.add_edge("process_inputs", "extract_keywords")
-    # Temporarily bypass RAG nodes
-    workflow.add_edge("extract_keywords", "rewrite_resume")
+
+    # Add the new RAG routing logic
+    workflow.add_conditional_edges(
+        "extract_keywords",
+        should_use_rag,
+        {
+            "transform_query": "transform_query",
+            "rewrite_resume": "rewrite_resume",
+        }
+    )
+    workflow.add_edge("transform_query", "rag_keyword_enhancer")
+    workflow.add_edge("rag_keyword_enhancer", "rewrite_resume")
+
     workflow.add_edge("rewrite_resume", "evaluate_resume")
 
     # Self-correction loop
@@ -190,8 +270,9 @@ def create_graph() -> StateGraph:
 
     workflow.add_edge("output_formatter", END)
 
-    # Compile the graph with interruption
-    app = workflow.compile(interrupt_after=["present_to_user"])
+    # Compile the graph with interruption and a memory saver
+    checkpointer = MemorySaver()
+    app = workflow.compile(checkpointer=checkpointer, interrupt_after=["present_to_user"])
 
     return app
 
@@ -200,7 +281,7 @@ def extract_keywords(state: GraphState) -> Dict:
     """
     Extracts keywords from the job description using an LLM.
     """
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatDeepSeek(model="deepseek-chat", api_key=os.environ.get("DEEPSEEK_API_KEY"), temperature=0)
     structured_llm = llm.with_structured_output(Keywords)
     system_prompt = """You are an expert recruiter. Your task is to extract the most important keywords, skills, \
 and technologies from the given job description. Focus on the core requirements and qualifications. \
@@ -220,7 +301,7 @@ def transform_query(state: GraphState) -> Dict:
     """
     Transforms the keywords and job description into a better query for RAG.
     """
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatDeepSeek(model="deepseek-chat", api_key=os.environ.get("DEEPSEEK_API_KEY"), temperature=0)
     system_prompt = """You are a query optimization expert. Your task is to take a list of keywords and a job description \
 and transform them into a single, concise, and semantic query that is ideal for retrieving relevant documents from a \
 vector database. The query should capture the core essence of the job role."""
@@ -249,7 +330,7 @@ def rewrite_resume(state: GraphState) -> Dict:
     """
     Rewrites the resume based on the job description and keywords.
     """
-    llm = ChatOpenAI(model="gpt-4o", temperature=0.3)
+    llm = ChatDeepSeek(model="deepseek-chat", api_key=os.environ.get("DEEPSEEK_API_KEY"), temperature=0.3)
     structured_llm = llm.with_structured_output(OptimizedResume)
 
     system_prompt = """You are an expert career coach and resume writer. Your task is to optimize a client's resume to perfectly match a target job description.

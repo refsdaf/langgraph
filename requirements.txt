@@ -1,0 +1,6 @@
+langgraph
+langchain-deepseek
+langchain-core
+pydantic>=2.0
+pytest
+pytest-mock
