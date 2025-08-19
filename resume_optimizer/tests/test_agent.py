@@ -1,11 +1,13 @@
 import pytest
 import os
 from langgraph.graph import StateGraph
-from resume_optimizer.agent import (
-    GraphState, process_inputs, extract_keywords,
-    rewrite_resume, evaluate_resume, output_formatter,
-    decide_to_rewrite, handle_user_feedback, create_graph,
-    Keywords, OptimizedResume, Evaluation, RagDecision
+from resume_optimizer.models import GraphState, Keywords, OptimizedResume, Evaluation, RagDecision
+from resume_optimizer.nodes import (
+    process_inputs, extract_keywords, rewrite_resume,
+    evaluate_resume, output_formatter
+)
+from resume_optimizer.graph import (
+    decide_to_rewrite, handle_user_feedback, create_graph, should_use_rag
 )
 
 def test_graph_state_initialization():
@@ -122,7 +124,7 @@ def test_rag_keyword_enhancer_node(mocker):
     Tests the RAG keyword enhancement node by mocking the API call.
     """
     import httpx
-    from resume_optimizer.agent import rag_keyword_enhancer
+    from resume_optimizer.tools import rag_keyword_enhancer
 
     # Mock the httpx.post call
     mock_response = mocker.MagicMock(spec=httpx.Response)
@@ -150,8 +152,6 @@ def test_should_use_rag_edge(mocker):
     """
     Tests the conditional edge that decides whether to use RAG.
     """
-    from resume_optimizer.agent import should_use_rag, RagDecision
-
     # Mock the LLM to return "rag"
     mocker.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test_key"})
     mocker.patch(

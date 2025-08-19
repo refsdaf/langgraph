@@ -1,3 +1,24 @@
+[project]
+name = "resume-optimizer"
+version = "0.1.0"
+description = "A resume optimization agent."
+dependencies = [
+    "langchain",
+    "langchain-deepseek",
+    "pydantic",
+    "httpx",
+    "langgraph",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-mock",
+]
+
+[project.scripts]
+uv = "uv:main"
+
 # ==================== Ruff Linter配置 ====================
 [tool.ruff.lint]
 # 选择要检查的规则类别
