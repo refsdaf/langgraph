@@ -1,0 +1,12 @@
+# ==================== Ruff Linter配置 ====================
+[tool.ruff.lint]
+# 选择要检查的规则类别
+select = [
+    "E",     # pycodestyle errors
+    "F",     # pyflakes
+    "B",     # flake8-bugbear
+    "I",     # isort
+    "ANN",   # flake8-annotations
+    "UP",    # pyupgrade
+    "SIM",   # flake8-simplify
+]
